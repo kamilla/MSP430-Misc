@@ -1,0 +1,492 @@
+﻿MSP430:sen muistiavaruus toteuttaa "von-Neyumannin arkkitehtuuria" ja sisältää koodi-muistin ja data-muistin samassa osoiteavaruudessa käyttäen jokaiselle omaa uniikkia osoitetta. Kaikki fyysisesti erillään olevat muistit, ROM, RAM, SFR, Periphetal moduulit ja mahdollinen ulkoinen muisti on mäpätty samaan osoiteavaruuteen.
+
+
+
+/** 
+ * Lyhyesti
+ */
+
+Päämuistialue, Flash, ROM, 0xC000 - 0xFFFF, 16 kilotavua, jaettu 512 tavun segmentteihin, jotka on edelleen jaettu 64 tavun blokkeihin.
+
+Informaatiomuisti, Flash, ROM, 0x1000 - 0x10FF, 256 tavua, jotka on jaettu 64 tavun segmentteihin
+
+Kirjoitus-/Lukumuisti, RAM, 0x0200 - 0x03FF, 512 tavua, oletuskoot (IAR) stackille 80 tavua ja heapille 80 tavua
+
+Periphetal moduulit, 0x0-0x01FF, 512 tavua, 16-bittiset moduulit 256 tavua (Timer, ADC, ..), 8-bittiset moduulit 240 tavua (I/O, LCD, 8bT/C, ..) ja Special Function Register (SFR) 16 tavua
+
+Tavun koko MSP430:ssä on 8 bittiä.
+
+
+/**
+ * MSP430 Muistialueet
+ */
+
+MSP430:sen dataväylä on joko 8-bittiä 16-bittiä leveä. Jos moduulia voidaan käyttää 16-bittisellä datalla, on väylän leveys aina 16-bittiä.
+
+Muistialueen osoitekartta:
+
+Osoite					Funktio	    |	Väylän leveys
+----------------------------------------------------|-----------------
+0xFFFF	Reset vector				    |
+:	Interrupt vector table 		 	    |	
+0xFFE0	\					    |	
+0xFFDF	 Flash Segment 32		ROM	    |	Word/Byte
+:	/    Divided into 8 * 64 Byte Blocks	    |	
+0xFE00	[64B][64B][64B][64B][64B][64B][64B][64B]    |
+----------------------------------------------------|-----------------
+0xFDFF						    |
+:	Flash Segments [2 - 31]			    |
+:	Branch control tables,		ROM	    |	Word/Byte
+:	Data tables, ...			    |
+0xC200						    |
+----------------------------------------------------|-----------------
+0xC1FF	Flash Segment 1				    |
+:	Program Memory			ROM	    |	Word/Byte
+0xC000						    |
+----------------------------------------------------|-----------------
+:						    |
+:						    |
+----------------------------------------------------|-----------------
+10FF	Information Memory Seg A		    |
+:	Calibration Variables		ROM	    |	Word/Byte
+10C0						    |
+----------------------------------------------------|-----------------
+10BF						    |
+:	Information Memory Seg B	ROM	    |	Word/Byte
+1080						    |
+----------------------------------------------------|-----------------
+107F						    |
+:	Information Memory Seg C	ROM	    |	Word/Byte
+1040						    |
+----------------------------------------------------|-----------------
+103F						    |
+:	Information Memory Seg D	ROM	    |	Word/Byte
+1000						    |
+----------------------------------------------------|-----------------
+:						    |
+:						    |
+----------------------------------------------------|-----------------
+0x03FF					    	    |
+:	CSTACK 80 Bytes			RAM	    |	Word/Byte
+0x03B0						    |
+----------------------------------------------------|-----------------
+0x03AF						    |
+:	HEAP 80 Bytes			RAM	    |	Word/Byte
+0x0360 						    |	
+----------------------------------------------------|-----------------
+0x035F						    |
+: 	GLOBAL/STATIC 352 Bytes		RAM	    |	Word/Byte
+0x0200 					 	    |	
+----------------------------------------------------|-----------------
+0x01FF					Timer,	    |
+:	16-bit Peripheral Modules	ADC, ...... |	Word
+0x0100						    |
+----------------------------------------------------|-----------------
+0x0FF					I/O, 	    |
+:	8-bit Peripheral Modules	LCD,	    |	Byte
+0x010					8bT/C, .... |
+----------------------------------------------------|-----------------
+0x0F						    |
+:	Special Function Registers	SFR	    |	Byte
+0x0						    |
+----------------------------------------------------|-----------------
+
+
+
+Linkkerin konffista voidaan lukea tarkemmat tiedot mitä minnekin alueelle menee:
+
+DATA on tyypillisesti RAM:ia, mutta voidaan myös määrittää absoluuttiseen muistiosoitteeseen ROM:iin. CONST on ROM:ia, kuten myös suoritettava koodi, CODE on ROM:ia.
+
+
+-Z(DATA)DATA16_I,DATA16_Z,DATA16_N,TLS16_I,DATA16_HEAP+_DATA16_HEAP_SIZE=0200-03FF
+
+-Z(DATA)CODE_I
+-Z(DATA)CSTACK+_STACK_SIZE#
+
+Eli RAM, muistialue 0x0200 - 0x03FF, sisältää:
+
+- alustetut, nollaksi alustetut sekä __no_init __data16 staticit ja globalit, main-threadissa alustetut Thread-local staticit ja globalit ja data16 alueessa sijaitsevan heapin.
+
+- kuten myös RAMmiin laitetun koodin (__ramfunc), sekä stackin.
+
+Stackin kokoa ei sinänsä pysty rajaamaan, vaikka se voidaankin määrittää. MSP430:ssa se kasvaa "alaspäin", top-down, kun taas globalit kasvavat "ylöspäin", bottom-up, sitä vastaan. Niiden välissä sijaitsee heap. (HUOM. systeemispesifinen, näin siis MSP430:ssä, esimerkiksi yleisesti tietokoneissa stack ja heap voi sijaita missä päin tahansa muistia)
+
+RAMmia kaiken kaikkiaan 512 Byteä
+R[0x03B0-0x03FF] 	// STACK 		80 Bytes
+A[0x0360-0x03AF] 	// HEAP 		80 Bytes
+M[0x0200-0x035F] 	// GLOBAL/STATIC	352 Bytes
+
+Kuten sanottu, stackin kokoa ei voi rajata mitenkään, jotenki jos globalit vievät vaikka 340 tavua, ja stacki kasvaa jossain funkkarikutsussa 94 tavuun, niin tulee stack overflow, eli stack ylikirjoittaa globaleille varatun muistialueen kaksi viimeistä bittiä ja ohjelma luultavasti alkaa käyttäytyä kummallisesti.
+
+Näiden kanssa kannattaa olla tarkka leikkiessä RAMmilla. Kääntäjä ei tule kertomaan sinulle että tässä saattaa tapahtua stack overflow.
+
+MSP430G2553 onkin suhteellisen hankala ohjelmoitava, kun halutaan tehdä vähänkään isompaa ohjelmaa, varsinkin jos se tarvitsee paljon globaleita tai rammista ajettuja funktioita, kuten esimerkiksi block-write.
+
+Stackin kokoa voidaan myös muuttaa tarvittaessa, jos esimerkiksi ohjelma tarvitsee 200 byten stackin mutta se pärjää 200 globaleille ja staticeille varatulla tilalla.
+
+Stackin ja heapin koon määrittämisellä voidaan varmistaa linkkaamisen aikana että globaleille ja määritellyille stackille ja heapille on tilaa.
+
+
+-Z(CONST)INFO=1000-10FF
+-Z(CONST)INFOA=10C0-10FF	// Segment A	64 Bytes
+-Z(CONST)INFOB=1080-10BF	// Segment B	64 Bytes
+-Z(CONST)INFOC=1040-107F	// Segment C	64 Bytes
+-Z(CONST)INFOD=1000-103F	// Segment D	64 Bytes
+
+Informaatiomuistia on 256 byten verran. Se on jaettu neljään 64 byten segmenttiin. Niistä ensimmäinen, Segmentti A, on varattu kalibrointidatalle ja se on suojattu LOCKA bitillä. Masserase ei tyhjennä A segmenttiä niin kauan kuin LOCKA on 1, jos se asetetaan 0:ksi voidaan A segmenttiä käyttää kuten mitä tahansa muutakin segmenttiä.
+
+
+-Z(CONST)DATA16_C,DATA16_ID,TLS16_ID,DIFUNCT,CHECKSUM=C000-FFDF
+
+-Z(CODE)CSTART,ISR_CODE,CODE_ID=C000-FFDF	// Startup koodi ja interrupt funktiot
+-P(CODE)CODE=C000-FFDF				// Normaali koodi
+
+Muistialueella 0xC000 - 0xFFDF sijaitsevat:
+
+- __data16 constant data, init-arvot __data16 static ja global muuttujille DATA16_I:ssa, init-arvot thread-local static ja global muuttujille TLS16_I:ssä, pointterit koodiin, c++ konstruktorit ja linkkerin generoima checksum-byte (mikäli käytetään -J optiota)
+
+- siellä sijaitsee myös startup-koodi ja interrupt funkkarit, sekä normaali koodi.
+
+
+-Z(CODE)INTVEC=FFE0-FFFF	// Interrupt vektori
+-Z(CODE)RESET=FFFE-FFFF		// Reset vektori
+
+- "Viimeiset" 32 Byteä sisältävät interrupt vektorit sekä reset vektorin.
+
+
+Kuten jo mainittua MSP430:ssä RAMmissa global pool kasvaa "ylöspäin", bottom-up ja stack kasvaa "alaspäin", top-down. Tämä on hyvä pitää mielessä jos RAMmia ohjelmoidaan absoluuttisilla muistiosotteilla.
+
+ROMmissa (Flash) oleva koodi kasvaa myös "ylöspäin", bottom-up. Koodin koko ja tarkemmat osoitteet voidaan katsoa esimerkiksi linkkerin tekemästä map-tiedostosta. Koodin ja muuttujien sijoittelun voi myös määrittää itse muokkaamalla linkkerin konffia. Flashin käsittelyssä on tärkeä tietää missä muistialueessa koodi ja muuttujat sijaitsevat, ettei sitten vain tyhjennä juuri sitä segmenttiä, josta koodia ajetaan. Käytännössä default linkkerin konffilla koodi sijaitsee pääosin ROMmin "alkupäässä", eli muistipaikasta 0xC000 eteenpäin. 
+
+Esimerkkiohjelman mappi:
+
+SEGMENT     START ADDRESS   END ADDRESS     SIZE  TYPE  ALIGN
+=======     =============   ===========     ====  ====  =====
+DATA16_AN            0056 - 0057               2   rel    0	// uninitialized data, 2 tavua, DATA(absolute), RAM
+                     0120 - 0121               2 		// uninitialized data, 2 tavua, DATA(absolute), RAM
+                     0128 - 012D               6 		// uninitialized data, 6 tavua, DATA(absolute), RAM
+DATA16_I             0200 - 020F              10   rel    1	// static and global initialized, 16 tavua, DATA(absolute), RAM
+DATA16_Z             0210 - 0210               1   rel    1	// zero-initialized static & global, 1 tavu, DATA(absolute), RAM
+CODE_I               0212 - 0351             140   rel    1	// __ramfunc koodi, 320 tavua, DATA, RAM
+CSTACK               03AA - 03FF              56   rel    1	// stack, 86 tavua, DATA, RAM (HUOM. kasvaa ja pienenee ajossa)
+DATA16_AN            10FE - 10FF               2   rel    0	// uninitialized data, 2 tavua, DATA(absolute), INFOMEM A, ROM
+DATA16_C                C000                       dse    0	// constant data, CONST, MAINMEM, ROM
+DATA16_ID            C000 - C00F              10   rel    1	// DATA16_I initial static & global, 16 tavua, CONST, MAINMEM, ROM
+CSTART               C010 - C047              38   rel    1	// startup koodi 56 tavua CODE, MAINMEM, ROM
+ISR_CODE                C048                       dse    0	// interrupt funkkarit MSP430X:ään, CODE, MAINMEM, ROM
+CODE_ID              C048 - C187             140   rel    1	// RAM:iin kopioitava koodi, 320 tavua, CODE, MAINMEM, ROM
+<CODE> 1             C188 - C231              AA   rel    1	// ohjelman koodi, 170 tavua, CODE, MAINMEM, ROM
+RESET                FFFE - FFFF               2   rel    1	// reset vektori, 2 tavua, CODE, MAINMEM, ROM
+
+ 548 bytes of CODE  memory					// ROM
+ 423 bytes of DATA  memory (+ 12 absolute )			// pääasiassa RAM:ia, absoluuttisesti sijoitetut mahd. muualla
+  16 bytes of CONST memory					// ROM
+
+
+ROMmissa (Flash) oleva koodi ja muuttujat sijaitsevat reset vektoria lukuunottamatta flashin "alkupäässä". Eli 548 + 16 - 2 = 562 tavua. Koska pienin pyyhittävä alue on segmentti, 512 tavua, vievät globalit ja koodi kahden segmentin verran tilaa, ellei käytetä RAM:ista ajettavaa funktiota, joka kirjoittaa flashiä, ja joka kopioi toisen segmentin 562 - 512 = 50 tavua aina uudelleen toiseen segmenttiin. On myös muistettava tällöin ettei kirjoitettavaa segmenttiä pysty myöskään kirjoitus hetkellä lukemaan, vaikka se olisikin block-writessä mahdollista. Mikäli ei ole täysin välttämätöntä käyttää vajaassa segmentissä olevia tavuja, en suosittele niiden käyttöä, vaan on huomattavasti helpompi ja järkevämpi ottaa käyttöön muistialue kolmannesta segmentistä lähtien.
+
+
+/*
+ * Minne muuttujat menevät ja miten sen voi määrittää?
+ */
+
+Type Attribute		Memory		Location	
+const static		ROM			
+const global		ROM		section(".TEXT")
+const volatile		RAM		section(".DATA")
+const			RAM		section(".DATA")
+static			RAM		section(".DATA")
+volatile		RAM
+local/auto		RAM		STACK
+
+__data16		RAM/ROM			// sama kuin #pragma type_attribute=__data<NN>
+__data20		RAM/ROM
+__regvar		Register	R4-R5	// vaatii --regvar_r4 tai --regvar_r5 kääntäjän asetuksiin
+__root			ROM			// 
+__ro_placement		ROM			// käytetään yhdessä const ja volatilen kanssa
+__no_init		ROM			// ei alusteta, esim startup
+__ramfunc		RAM/ROM		section(".CODE_I")
+
+malloc, calloc		RAM		HEAP
+
+
+Notes:
+
+
+volatile
+volatile estää kääntäjän optimoinnin. joka kerta kun muuttujan arvo luetaan, se luetaan uudelleen, sitä ei tallenneta rekisteriin, eikä sen tilaa seurata. Se on kätevä keywordi kun esim. muuttujan arvoa muokataan interruptissa.
+
+kun määritetään volatile vielä constiksi, saadaan arvo joka on kirjoitussuojattu, mutta sijaitsee RAMmissa. Sen saa siirrettyä ROMmiin antamalla sille __ro_placement attribuutin.
+
+
+DATA16
+Pointteri data16 paikkaan on 16 bittinen, eli vie kaks tavua muistia. Luku ja kirjoitus tapahtuu normaalilla (non-ext.) instruction setillä, joten saadaan pienempi koodi ja nopeampi suoritusaika.
+
+DATA20
+Data20 vaatiin extented instruction setin arkkitehtuurin. Pointteri data20 muistipaikkaan vie kaksi kertaa niin paljon tilaa kuin data16 pointteri, eli 4 tavua. Ei käytössä Small Data Modelissa.
+
+Data16 ja data20 keywordilla määritetyt muuttujat kirjoitetaan eri paikkoihin riippuen muuttujan tyypistä
+
+Categories of declared data 		Suffix 	Segment memory type
+Non-initialized data 			N 	DATA
+Zero-initialized data 			Z 	DATA
+Non-zero initialized data 		I 	DATA
++ Initializers for the above		ID 	CONST
+Constants 				C 	CONST
+Persistent data 			P 	DATA
+Non-initialized absolute addressed data AN
+Constant absolute addressed data 	AC
+
+esimerkiksi: __data16 int j = 4;
+eli non-zero initialized data menee RAMmiin DATA16_I segmenttiin ja initializeri menee ROMmiin DATA16_ID segmenttiin.
+
+
+__no_init:iä käytetään mm. @:n/location:in yhteydessä kun halutaan kirjoittaa muuttuja määrättyyn paikkaan ROMmissa, jolloin muuttujaa ei tarvitse alustaa.
+
+
+__root kirjoittaa datan RAMmin sijasta ROMmiin.
+
+
+__ramfunc määrittää funkkarin sijoittamisen RAMmiin. Käskyt kopioidaan startupissa ROMmista RAMmiin. ROM:issa sijaitsee init-vektorit ja RAMmissa suoritettava koodi.
+
+
+
+/*
+ * location ja @
+ */
+
+
+#pragma location={address|NAME}
+
+#pragma location ja @ ovat sama operaatio. Sillä voidaan määrittää muuttujan tai funktion sijainti minne halutaan.
+muuttuja täytyy olla määritetty joko __no_init:iksi tai const:iksi. address on absoluuttinen muistiosoite. NAME on määritelty segmentin nimi, ei saa olla kääntäjän tai linkkerin oletusnimi.
+
+esim.
+
+__no_init const int var @ 0x0206;
+
+#pragma location=0x0206
+__no_init const int var;
+
+(HUOM: vain parilliset osoitteet sallittuja, koska 16-bittiä väylän leveys, esim. __no_init int var @ 0x0207; on väärin)
+
+
+#pragma location=0x0202
+__no_init const int beta;
+
+const int gamma @ 0x0204;
+__no_init int epsilon @ 0x0206;
+
+__no_init int epsilon @ 0x0207; misaligned
+
+#pragma dataseg=[__memoryattribute ]{SEGMENT_NAME|default}
+
+__memoryattribute vapaavalintainen muistiattribuutti mihin muistiin segmentti laitetaan. Jos se on tyhjä, niin oletusmuistia käytetään. SEGMENT_NAME on määritelty segmentin nimi, ei saa olla kääntäjän tai linkkerin oletusnimi. Asetus vaikuttaa niin kauan kunnes se laitetaan pois komennolla: #pragma constseg=default
+
+esim.
+
+#pragma dataseg=__data20 MY_SEGMENT
+__no_init char myBuffer[1000];
+#pragma dataseg=default
+
+
+/*
+ * Flashin kirjoittaminen ja lukeminen
+ */
+
+Kuten jo mainitsin MSP430:n flashi koostuu päämuistialueesta ja informaatiomuistista. G2553-mallissa on 16 kilotavun päämuisti, joka on jaettu 512 tavun segmentteihin, jotka kukin koostuvat kahdeksasta 64 tavun blokista. Informaatiomuisti on 256 tavun kokoinen ja se on jaettu neljään 64 tavun segmenttiin.
+
+MSP430:sen flashiä voidaan ohjelmoida ja osoittaa bitti, tavu, ja/tai word (eli kaksi tavua, 16 bittiä) kerrallaan. Flash moduulissa on integroitu kontrolleri, jossa on neljä rekisteriä, ajoitus generaattori (flash timing generator) ja jännite generaattori. Se ohjaa muistin ohjelmointia ja pyyhkimistä.
+
+Flashin ominaisuudet
+
+PARAMETER 								Vcc 		MIN 	TYP 	MAX 	UNIT 
+VCC(PGM/ERASE) 	Program and erase supply voltage 					2.2 		3.6 	V
+fFTG 		Flash timing generator frequency 					257 		476 	kHz
+IPGM 		Supply current from VCC during program 			2.2 V/3.6 V 		1 	5 	mA
+IERASE 		Supply current from VCC during erase 			2.2 V/3.6 V 		1 	7 	mA
+tCPT 		Cumulative program time 				2.2 V/3.6 V 			10 	ms
+tCMErase 	Cumulative mass erase time 				2.2 V/3.6 V 			20 	ms
+		Program/erase endurance 						10000 	100000 		cycles
+tRetention 	Data retention duration 							100 		years
+tWord 		Word or byte program time 							30		tFTG
+tBlock 0 	Block program time for first byte or word 					25 		tFTG
+tBlock 1-63 	Block program time for each additional byte or word				18 		tFTG
+tBlock End 	Block program end-sequence wait time 						6 		tFTG
+tMass Erase 	Mass erase time 								10593 		tFTG
+tSeg Erase 	Segment erase time 								4819 		tFTG
+
+Oletustila Flashille on lukutila. Lukutilassa flashia ei tyhjennetä eikä kirjoiteta. Flashin ajoitus generaattori sekä jännite generaattori on pois päältä. 
+
+Flash muistin kirjoitus- ja lukutilat määritellään kirjoittamalla Flash kontrolli 1:seen enabled-bitti. Näitä ovat:
+
+unsigned short ERASE 	// Segmentin tyhjennys
+unsigned short MERAS 	// Massatyhjennys
+unsigned short WRT	// kirjoitus
+unsigned short BLKWRT 	// blokin-kirjoitus
+
+Kun flashia kirjoitetaan flashistä, tulee suoritettavan koodin sijaita eri segmentissä, kuin mitä kirjoitetaan. Aina kun flashia luetaan tai kirjoitetaan flashistä, CPU suoritus pysähtyy. Flashia voi myös lukea ja kirjoittaa RAM:ista, jolloin CPU:ta voi käyttää samaan aikaan. Interruptit pysähtyvät aina flash-operaation ajaksi. Jos kuitenkin interrupt triggautuu tällä aikaa, syntyy interrupt requesti heti kun flash-operaatio on suoritettu.
+
+Kirjoitus ja pyyhkimis toimintoja ohjaa flashin ajoitus generaattori (flash timing generator). Sen taajuus täytyy olla välillä 257kHz - 476 kHz. Sen ajastus voi tulla mistä tahansa MSP430:n kellosta ACLK:sta, SMCLK:sta tai MCLK:sta
+
+Jos ei ulkoista oskillaattoria (XT1) ole käytössä, en suosittele apukellon (ALCK) käyttämistä lähteenään sisäinen erittäin alhaisen taajuuden oskillaatori (VLO) sillä se on suhteelisen altis pienillekin häiriöille ja siinä on erittäin suuri taajuusheitto suhteessa lämpötilaan (0.5%/°C) ja käyttöjännitteeseen (4%/V). Tämä kuitenkin syö huomattavasti vähemmän virtaa kuin MCLK ja SMCLK.
+
+Oletusarvona digitaalisesti ohjatusta oskillaattorista (DCO) periytyvät pääkello (MCLK) ja alipääkello (SMCLK) ovat paljon vakaampia ja vähemmän herkkiä lämpötila- ja jännitemuutoksille. DCO voidaan myös kalibroitua suhteellisen tarkasti. Käytännössä 1 megahertsin taajuudelle kalibroitu DCO heittää ± 0.5%.
+
+Paras vaihtoehto olisi kuitenkin ulkoinen oskillaattori (XT1) ja ALCK, sillä se söisi vähiten virtaa, ja taajuus olisi tarkka.
+
+Flash timing generaattorin taajuus asetetaan toiseen kontrolleriin komennolla:
+
+FCTL2 = FWKEY + FSSEL_<N> + [FN5] + [FN4] + [FN3] + [FN2] + [FN1] + [FN0];
+
+Siinä FWKEY on flash-avain, jota tarvitaan kirjoittamiseen. Ilman tätä flashin käsittely ei onnistu.
+
+Seuraavalla valintabitillä, Flash Clock Selectillä, valitaan lähtökello:
+
+FSSEL_0		// ACLK
+FSSEL_1		// MCLK
+FSSEL_2 	// SMCLK
+FSSEL_3		// SMCLK
+
+Ja FN<N> biti/eillä asetetaan taajuuden jakaja muodossa 32FN5 + 16FN4 + 8FN3 + 4FN2 + 2FN1 + FN0 + 1
+
+Esim.
+
+DCO kalibroitu 1 MHz / 3 = 333 kHz
+
+if (CALBC1_1MHZ==0xFF) return;		// If calibration constant erased, GTFO, don't fuck up the flash   
+DCOCTL = 0;                 		// Select lowest DCOx and MODx
+BCSCTL1 = CALBC1_1MHZ;   		// Set range
+DCOCTL = CALDCO_1MHZ;			// Set DCO step + modulation
+
+FCTL2 = FWKEY + FSSEL_1 + FN1		// Valitaan MCLK ja jakajaksi 2*FN1 + 1 = 3
+
+
+DCO kalibroitu 8 MHz / 17 = 471 kHz
+
+if (CALBC1_8MHZ==0xFF) return;		// If calibration constant erased, GTFO, don't fuck up the flash   
+DCOCTL = 0;                 		// Select lowest DCOx and MODx
+BCSCTL1 = CALBC1_8MHZ;   		// Set range
+DCOCTL = CALDCO_8MHZ;			// Set DCO step + modulation
+
+FCTL2 = FWKEY + FSSEL_1 + FN4		// Valitaan MCLK ja jakajaksi 16*FN4 + 1 = 17
+
+
+DCO frequency (4, 3) 3 voltin lähdöllä = 0.41 MHz / 1 = 410 kHz
+
+// RSELx = 4 = 0b0100
+BCSCTL1 &= ~(BIT0 + BIT1 + BIT3);  	// set bits 0, 1 and 3 to 0
+BCSCTL1 |= BIT2;     			// set bit 2 to 1
+
+// DCOx = 3 = 0b011
+DCOCTL &= ~BIT7;   			// set bits 7 to 0
+DCOCTL |= BIT6 + BIT5; 			// set bit 5 and 6 to 1
+
+FCTL2 = FWKEY + FSSEL_1			// Valitaan MCLK ja jakajaksi 1 = 1
+
+
+DCO frequency (11, 3) 3 voltin lähdöllä = 4.25 MHz / 9 = 472 kHz
+
+// RSELx = 11 = 0b1011
+BCSCTL1 &= ~BIT2;  			// set bit 2 to 0
+BCSCTL1 |= BIT0 + BIT1 + BIT3;     	// set bits 0, 1 and 3 to 1
+
+// DCOx = 3 = 0b011
+DCOCTL &= ~BIT7;   			// set bits 7 to 0
+DCOCTL |= BIT6 + BIT5; 			// set bit 5 and 6 to 1
+
+FCTL2 = FWKEY + FSSEL_1 + FN3		// Valitaan MCLK ja jakajaksi 8*FN3 + 1 = 9
+
+
+
+Tyhjentäminen
+
+Tyhjä flash bitti on arvoltaan 1. Jokainen bitti voidaan ohjelmoida ykkösestä nollaksi, mutta nollasta ykköseen ohjelmointi vaatii tyhjennyksen. Pienin tyhjennettävä muistialue on segmentti. Eli vaikka kirjoitettaisiin vain yksi bitti, täytyy silti koko segmentti (512 tavua) tyhjentää. Voidaan myös tyhjentää koko muistialue kerralla, MERAS. Erilaisia tyhjennystiloja on neljä:
+
+ERASE				- tyhjentää segmentin
+MERAS				- tyhjentää päämuistialueen
+ERASE + MERAS			- tyhjentää päämuistialueen ja informaatiomuistin segmentit B, C ja D
+ERASE + MERAS + LOCKA = 1	- tyhjentää päämuistialueen ja informaatiomuistin kokonaan
+
+Tyhjennys aloitetaan dummy-kirjoittamalla segmentin muistialueeseen. Dummy-operaatiota ei oikeasti suoriteta, se käynnistää vain tyhjennyksen ja asettaa flash kontrolli 2:seen BUSY-bitin. Kun tyhjennys on suoritettu, poistuvat BUSY-,ERASE- ja MERAS-bitti automaattisesti.
+
+Kirjoittaminen
+
+Kirjoitustiloja on kaksi:
+
+WRT		- Tavu tai word kirjoitustila, eli 8 tai 16 bittiä kerralla
+BLKWRT + WRT	- block write -tila, jossa kirjoitetaan 64 tavun blokki "kerralla" (jokainen käsky on silti erillinen)
+
+Block write -tila on kaksi kertaa niin nopea kuin tavu/word -tila, koska jännite generaattori pysyy koko kirjoitusjakson ajan päällä. Samalla tavalla kuin tyhjennyksessä, BUSY-bitti asetetaan kirjoitusoperaation alussa ja poistetaan heti sen loputtua. Jos ajetaan RAM:ista, pitää muistaa tarkistaa ettei flashi kontrollissa ole BUSY bittiä asetettuna, koska samaan aikaan ei voi tehdä kahta operaatiota.
+
+Kirjoittaessa flashiin aina kirjoitettava 64 tavun blokkiin johdetaan jännite. Jos tämä jännite pidetään niissä liian kauan, se saattaa rikkoa flashin. Flashin ominaisuuksissa onkin määritelty kumulatiivinen ohjelma-aika, joka kertoo maksimi ajan jonka jännite saa olla blokissa. MSP430G2553:ssa tämä aika, tCPT on 10 millisekuntia, tätä aikaa ei saa ylittää! Kirjoitusoperaatioille löytyy taulukosta kestot, tWord tai tBlock, joiden avulla voidaan laskea kuinka pitkään jännite pidetään muistiblokissa. Flashin tyhjennys aloittaa kumulatiivisen laskennan taas alusta.
+
+Tavu/word -tilassa voidaan kirjoittaa joko flashista tai RAM:ista käsin. Flashistä kirjoitettaessa CPU on pysähdyksissä kirjoituksen aikana. BUSY-bitti pysyy päällä yhden operaation ajan, ja se täytyy tarkistaa RAMista kirjoitettaessa aina operaatioiden välissä.
+
+Tässä tilassa yhden tavun tai 16 bitin kirjoituksen aikana 27 syklin verran annetusta kokonaisajasta, 30:stä syklistä, koko 64 tavun muistialueeseen kohdistuu jännite. Eli yhden blokin kirjoittamiseen tavuilla menee 64 * 27 = 1728 fFTG sykliä. 16-bittisillä jaksoilla tämä olisi tietysti puolet vähemmän. Alimmalla flash timing generaattorin taajuudella, fFTG = 257kHz, tähän kuluu aikaa 1728 / 257000 = 0.0067s, eli 6.7ms, mikä on jo sekin alle 10 millisekunnin. Nopeiten kirjoittamalla saataisiin taas 1728 / 476000 = 0.0036, eli 3.6ms per blokki.
+
+Block write -tilassa voidaan kirjoittaa ainoastaan RAM:ista. Siinä BUSY-bitti pysyy valittuna koko blokin kirjoituksen ajan, ja tavun tai wordin välissä pitää tarkistaa WAIT-bitti, ennen kuin seuraava voidaan kirjoittaa. BLKWRT-bitti täytyy nollata aina kun blokki on kirjoitettu. Se voidaan asettaa uudelleen kun flashi on palautunut operaatiosta (tBlockEND, end-sequence waiting time). Tämä voidaan tarkistaa kysymällä kontrollilta BUSY-bittiä.
+
+Tässä tilassa jännitteen päälläoloaika on ensimmäisellä bytellä tai wordillä 25 fFTG sykliä, ja sitä seuraavilla 18 fFTG sykliä. Flashin palautumisaika blokin kirjoittamisen jälkeen on 6 fFTG sykliä. Nopeimmalla taajuudella, kirjoittamalla 16-bittiä kerralla, saadaan 30 + 31 * 18 + 6 = 594 tFTG sykliä, eli 594 tFTG / 476000 (tFTG / s) = 0.00125, eli 1.25 millisekuntia per blokki.
+
+HUOM. Jokainen 64 tavun blokki on erillinen. Eli kumuloitavaa aikaa ei tarvitse laskea koko segmentille, vaikka se itseasiassa nopeimmalla kirjoitusnopeudella riittäisikin, 8 * 1.25ms = 10ms.
+
+
+Kirjoittamisen jälkeen flashi lukitaan taas FWKEY:llä asettamalla LOCK-bitti kontrolleriin:
+
+FCTL3 = FWKEY + LOCK;
+
+
+
+/*
+ * Koodin optimointi ja stackin hallitseminen, mitä kannattaa ja ei kannata tehdä?
+ */
+
+Muuttujista
+
+- Käytä pieniä datatyyppejä, kuten char 8-bittiä, short int 16-bittiä
+- Älä käytä 64-bittisiä tyyppejä, kuten double tai long long
+- Älä käytä muun kuin 1-bitin kokoisia bitfieldejä
+- Älä käytä floatteja, mikäli mahdollista
+- Älä käytä const:eja, se pakottaa kääntäjän luomaan muuttujan RAM:iin ajonaikana, käytä #define:ä, jolloin koodi luodaan ohjelma muistiin (ROM).
+
+Näkyvyysalueista
+
+- Pidä lokaalin(auto) muuttujan kaikki käsittely lähellä samaa pistettä
+- Älä tallenna mitään muuttujaa ennen kuin se on aivan välttämätöntä, vaikka koodi näyttäisikin rumalta
+esim.
+
+func foobar() {
+	bar = read();
+	do something;
+	foo = bar;
+}
+
+saattaa tuottaa koodin jossa on 20 byteä enemmä CODE:a, 20 byteä enemmän DATA:a, ja 10 byteä isompi maksimi STACK verrattuna.
+
+func foobar() {
+	do something;
+	bar = read();
+	foo = bar;
+}
+
+
+Kääntäjän optimointi
+
+- Käytä localeja ja auto-muuttujia
+- Yritä olla käyttämättä staticceja ja globaleja, ne vievät kaiken muistin
+- Älä käytä &-operaattoria muuttujan osoitteen ottamiseen, muuttuja täytyy silloin sijoittaa muistiin rekisterin sijasta, eikä voida olettaa ettei siihen ole koskettu
+- Käytä staticceja ennemmin kuin globaleja.
+- Koita olla hakematta sellaisen staticin osoitetta, jota tarvitaan usein, jotta se voidaan optimoida rekisteriin
+- Älä kirjoita sekaisin assemblya ja c/++:aa, käytä erillisiä funkkareita ja moduleita kumpaankin
+- Käytä parillisia arvoja switch-case:ssa, tällöin voit käyttää __even_in_range funkkaria.
+
+Stackin koon pienentäminen
+
+- Vältä pitkiä sisäkkäisiä funktiokutsuketjuja
+- Vältä rekursiivisia funkkareita
+- (Käytä --reduce_stack_usage asetusta tarvittaessa)
+- Käytä prototyypitettyä funktion määrittelyä K&R tyylin sijasta
+- ÄLÄ KÄYTÄ STRUCTEJA, TAI MUITA NON-SKALAAREJA PARAMETRINA TAI RETURN TYYPPINÄ!!! STRUCTI JÄÄ STACKIIN JA VIE KUMULATIIVISESTI TILAA AINA KUN FUNKTIOTA KUTSUTAAN UUDELLEEN!!! RATKAISU ON PASSATA POINTTERINA (TAI REFERENSSINÄ C++) SIIHEN.
+- Käytä __noreturn:ia jos funktio ei palaa koskaan. (esim. abort, exit).
+

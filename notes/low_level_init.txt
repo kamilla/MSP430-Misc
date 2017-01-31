@@ -1,0 +1,10 @@
+/*
+int __low_level_init(void)
+{
+  // stop WDT
+  WDTCTL = WDTPW + WDTHOLD;
+
+  // Perform C/C++ global data initialization
+  return 1;
+}
+*/

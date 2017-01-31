@@ -1,0 +1,5 @@
+﻿Assemblyn ja C:n integraatio ei ilmeisesti ole kovin saumaton. Vaikka kuinka yritin käyttää assemblyllä rekistereitä R4-R11 flipflop bitin ja osoite-osoittimen hallintaan, niin aina lopputuloksena kun kutsuin C-koodista asm-funkkaria paluupiste meni sekaisin. Ilmeisesti assembly jotenkin sotki PC:n ja SR:n ja jotenkin olisi pitänyt manuaalisesti palauttaa ne tilaan josta kutsu lähti. Arvot kyllä pysyivät ihan hyvin rekisterissä kun watch:illa niitä katselin, tosin eipä tästä ilmeisesti olisi kovin paljoa hyötyä ollut, sillä R6-R11 olisi kuitenkin pitänyt tallentaa välillä stackkiin. R4:sta ja R5:sta sentään voi käyttää suoraan ilman PUSH - PULL :ia.
+
+    // It would be so cool to be able to typecast multidimensional arrays without need to be defining array separately and typecasting pointer to that array
+    // We could reduce the CODE_I RAM size for 2 * 3 * 4 Bytes = 24 Bytes
+    // + additional 12 Bytes by defining segments globally with __data16 type keyword

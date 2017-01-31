@@ -1,0 +1,724 @@
+﻿Koska suoritettava koodi ladataan flash-muistin alkuun, otetaan käyttöön alue 11. blokista eteenpäin,
+0xD400 - 0xD5FF
+0xD600 - 0xD7FF
+
+
+Why do you use memcpy on an MSP? The maximum RAM size is 16k, so the maximum transfer size is 8k. And if you have to move so much, you're doing something wrong and optimizing your concept would bring more benefits than any optimized memcpy code. Don't move the data, move the pointers to it.
+(for flash transfers, the limiting factor is the flash write time, so optimization is useless here anyway)
+
+For small chunks of memory, the overhead of calling the function and picking the proper algorithm is usually larger than when you do the move by hand. The optimizing compilers are quite effective.
+
+And if really every cycle counts, then there's a DMA controller.
+
+But if you still want the optimized ASM code, well, then someone else must help you out. I never ever used memcpy at all in any of my projects.
+
+
+The 512-byte segment of main flash is sub-divided into four 128-byte rows. During write operation, programming voltage is applied to one row, not to the entire segment. (During segment erase operation, it is applied to the entire segment.)
+
+Each time a single bit, byte, or word is programmed, a complete row of 64-byte flash cells sees the high
+voltage necessary for programming. This high voltage generates some stress to the complete row of flash
+cells, and this stress must be time limited to avoid damage. The next erase cycle resets this stress time to
+zero, and the cumulative program time restarts again from the beginning. According to the data sheet, as
+shown in Table 3, this high-voltage stress must be limited to 10 ms between two erase cycles. See the
+data sheets for the correct values for each MSP430 derivative
+
+It is possible to execute code from RAM. This allows the CPU to continue executing instructions
+while the ﬂash is being programmed (erased, written). However, while the ﬂash is actually being
+written or erased and the BUSY bit is set, the CPU cannot read or write from/to the ﬂash. An
+Access Violation occurs in this case and the results are unpredictable. Flash programming from
+RAM is necessary for several reasons:
+
+You require the CPU to continue running through the periods when the ﬂash is being programmed (note the caveat below with MSP430)
+You wish to perform Mass Erase or Block-Write
+Note that in many MSP430 devices (regardless of whether executing from Flash or RAM), interrupt
+handling during ﬂash programming is not possible. This is because the interrupt vectors themselves
+are stored in Flash areas. You must therefore disable all interrupts (via the General Interrupt Enable
+or GIE bit), and re-enable them after all ﬂash operations are complete and the ﬂash is locked.
+
+
+Many applications require placing data in ﬂash. The easiest way to do so is to declare a global
+constant array with some data:
+__root const char calibrationData[5] ={1,2,3,4,5};
+
+Please note that the compiler can place this anywhere in ﬂash(TODO:usually infoﬂash???). This
+might not be good idea. In general, you want to know speciﬁcally where the compiler will place it
+so that if you decide to erase that segment you’re sure that it will not affect anything else.
+
+
+
+Any erase cycle can be initiated from within flash memory or from RAM. When a flash segment erase
+operation is initiated from within flash memory, all timing is controlled by the flash controller, and the CPU
+is held while the erase cycle completes. After the erase cycle completes, the CPU resumes code
+execution with the instruction following the dummy write.
+
+Any erase cycle may be initiated from RAM. In this case, the CPU is not held and can continue to execute
+code from RAM. The BUSY bit must be polled to determine the end of the erase cycle before the CPU
+can access any flash address again. If a flash access occurs while BUSY = 1, it is an access violation,
+ACCVIFG is set, and the erase results are unpredictable.
+
+Interrupts are automatically disabled during any flash operation when EEI = 0 and EEIEX = 0 and on
+MSP430x20xx and MSP430G2xx devices where EEI and EEIEX are not present. After the flash operation
+has completed, interrupts are automatically re-enabled. Any interrupt that occurred during the operation
+has its associated flag set and generates an interrupt request when re-enabled
+
+
+__ramfunc	//definee että funkkari tallennetaan RAMmiin
+
+
+
+You can place "const" variables to RAM, using the attribute "section(".data"))" as follows:
+
+const char __attribute__ ((section(".data"))) foo = 1;
+
+
+
+
+Initialized data
+When an application is started, the system startup code initializes static and global
+variables in two steps:
+1 It clears the memory of the variables that should be initialized to zero.
+2 It initializes the non-zero variables by copying a block of ROM to the location of the
+variables in RAM. This means that the data in the ROM segment with the suffix ID is
+copied to the corresponding I segment.
+This works when both segments are placed in continuous memory. However, if one of
+the segments is divided into smaller pieces, it is important that:
+● The other segment is divided in exactly the same way
+● It is legal to read and write the memory that represents the gaps in the sequence.
+For example, if the segments are assigned the following ranges, the copy will fail:
+However, in the following example, the linker will place the content of the segments in
+identical order, which means that the copy will work appropriately:
+Note that the gap between the ranges will also be copied.
+3 Finally, global C++ objects are constructed, if any.
+Data segments for static memory in the default linker command file
+In this example, the directives for placing the segments in the linker command file would
+be:
+// The RAM segments
+-Z(DATA)DATA16_I,DATA16_Z,DATA16_N=200-9FF
+// The ROM segments
+-Z(CONST)DATA16_C=1100-FFDF,DATA16_ID
+THE STACK
+The stack is used by functions to store variables and other information that is used
+locally by functions, as described in the chapter Data storage. It is a continuous block
+of memory pointed to by the processor stack pointer register SP.
+DATA16_I 0x200-0x2FF and 0x400-0x4FF
+DATA16_ID 0x600-0x7FF
+DATA16_I 0x200-0x2FF and 0x400-0x4FF
+DATA16_ID 0x600-0x6FF and 0x800-0x8FF
+38
+Data segments
+MSP430 IAR C/C++ Compiler
+Reference Guide
+The data segment used for holding the stack is called CSTACK. The system startup code
+initializes the stack pointer to the end of the stack segment.
+Allocating a memory area for the stack is done differently when you use the command
+line interface compared to when you use the IAR Embedded Workbench IDE.
+
+
+CODE For executable code
+CONST For data placed in ROM
+DATA For data placed in RAM
+
+Memory type Segment group Memory range
+Data16 DATA16 0x0000-0xFFFF
+Data20 DATA20 0x00000-0xFFFFF
+Table 7: Memory types with corresponding segment groups
+Categories of declared data Segment memory type Suffix
+Non-initialized data DATA N
+Zero-initialized data DATA Z
+Non-zero initialized data DATA I
+Initializers for the above CONST ID
+Constants CONST C
+Non-initialized absolute addressed data AN
+Constant absolute addressed data AC
+Table 8: Segment name suffixes
+__data16 int j;
+__data16 int i = 0;
+The data16 variables that are to be initialized to zero
+when the system starts will be placed in the segment
+DATA16_Z.
+__no_init __data16 int j;The data16 non-initialized variables will be placed in
+the segment DATA16_N.
+__data16 int j = 4; The data16 non-zero initialized variables will be
+placed in the segment DATA16_I in RAM, and
+initializer data in segment DATA16_ID in ROM.
+
+Segment Summary
+---------------
+
+CHECKSUM Holds the checksum generated by the linker.
+CODE Holds the program code.
+CODE_I Holds code declared __ramfunc.
+CODE_ID Holds code copied to CODE_I at startup.
+CSTACK Holds the stack used by C or C++ programs.
+CSTART Holds the startup code.
+DATA16_AC Holds __data16 located constant data.
+DATA16_AN Holds __data16 located uninitialized data.
+DATA16_C Holds __data16 constant data.
+DATA16_HEAP Holds the heap used for dynamically allocated data in data16 memory.
+DATA16_I Holds __data16 static and global initialized variables.
+DATA16_ID Holds initial values for __data16 static and global variables in DATA16_I.
+DATA16_N Holds __no_init __data16 static and global variables.
+DATA16_P Holds __data16 variables defined with the __persistent keyword.
+DATA16_Z Holds zero-initialized __data16 static and global variables.
+DATA20_AC Holds __data20 located constant data.
+DATA20_AN Holds __data20 located uninitialized data.
+DATA20_C Holds __data20 constant data.
+DATA20_HEAP Holds the heap used for dynamically allocated data in data20 memory.
+DATA20_I Holds __data20 static and global initialized variables.
+DATA20_ID Holds initial values for __data20 static and global variables in DATA20_I.
+DATA20_N Holds __no_init __data20 static and global variables.
+DATA20_P Holds __data20 variables defined with the __persistent keyword.
+DATA20_Z Holds zero-initialized __data20 static and global variables.
+DIFUNCT Holds pointers to code, typically C++ constructors, that should be executed by the system startup code before main is called.
+INFO Holds data to be placed in the MSP430 information memory.
+INFOA Holds data to be placed in bank A of the MSP430 information memory.
+INFOB Holds data to be placed in bank B of the MSP430 information memory.
+INFOC Holds data to be placed in bank C of the MSP430 information memory.
+INFOD Holds data to be placed in bank D of the MSP430 information memory.
+INTVEC Holds the interrupt vector.
+ISR_CODE Holds interrupt functions when compiling for the MSP430X architecture.
+REGVAR_AN Holds __regvar data.
+RESET Holds the reset vector.
+TLS16_I Holds thread-local static and global initialized variables used by the main thread.
+TLS16_ID Holds initial values for thread-local static and global variables in TLS16_I.
+
+
+
+MSP430G2553 Default
+
+// Core:                           MSP430
+// Interrupt vectors:              16
+// Peripheral units:               0-01FF
+// Information memory (FLASH):     1000-10FF
+// Read/write memory (RAM):        0200-03FF
+// Read-only memory (FLASH):       C000-FFFF
+
+Data Initialized by copying from DATA16_ID, Data16 initialized to zero, defined using __no_init, Thread-local storage for main thread, heap used by 'malloc' and 'free'
+
+__data16 static and global initialized variables.
+zero-initialized __data16 static and global variables.
+__no_init __data16 static and global variables.
+thread-local static and global initialized variables used by the main thread.
+the heap used for dynamically allocated data in data16 memory.
+
+-Z(DATA)DATA16_I,DATA16_Z,DATA16_N,TLS16_I,DATA16_HEAP+_DATA16_HEAP_SIZE=0200-03FF
+
+
+RAM code & Runtime stack
+-Z(DATA)CODE_I
+-Z(DATA)CSTACK+_STACK_SIZE#
+
+Information Memory, Segments A, B, C, D
+-Z(CONST)INFO=1000-10FF
+-Z(CONST)INFOA=10C0-10FF
+-Z(CONST)INFOB=1080-10BF
+-Z(CONST)INFOC=1040-107F
+-Z(CONST)INFOD=1000-103F
+
+Constant data, string literals, Initializers for DATA<nn>_I, Thread-local initializers for main thread, Dynamic initialization vector used by C++ & Checksum byte(s) generated by the -J option
+-Z(CONST)DATA16_C,DATA16_ID,TLS16_ID,DIFUNCT,CHECKSUM=C000-FFDF
+
+Startup code & interrupt functions
+-Z(CODE)CSTART,ISR_CODE,CODE_ID=C000-FFDF
+
+Normal code
+-P(CODE)CODE=C000-FFDF
+
+Interrupt Vectors & Reset Vector
+-Z(CODE)INTVEC=FFE0-FFFF
+-Z(CODE)RESET=FFFE-FFFF
+
+
+
+Teh G2553 has only 512 bytes of ram. Part of it (bottom up) is used to store your global variabels, part of it (top-down) is used for the stack.
+Now I don't know what else your program does, and which amount of local variables your main funciton will define (which all go onto the stack).
+
+This is because the stack allocates "down" the memory address, while statics and the heap allocate "up", so if an overflowing stack already crosses into statics and heap then increasing the stack size will not help, because there's no "free" space between the stack and statics/heap to begin with.
+
+How to fix this? Simple: don't waste so much ram. Don't declare more local variable sthan absolutely necessary. Don't declare individual local variables for each loop counter just 'because different names are more telling". Re-use a single one, if possible. Don't use recursions. Maybe block interrupts when youre calling a function that requires lots of local variables, so the ISR data won't be put on top of them.
+
+P.s.: 'setting' the stack size in the project setting has no influence on the binary. The stack grows as the stack needs. Always. No limitation possible (and what should the processor do if the stack limit is reached and it needs to put a return address on stack for an interrupt? Cry for help? It couldn't even call the function that emits the cry!)
+
+The 'setting' only produces a link error if after placing all global variables less than the 'set' amount is free. Apparently you most of your ram already for global variables, except for 140 bytes. These have to be sufficient for any local variables and return addresses and parameter calling. Apparently they aren't.
+
+
+
+The heap is the free area between the topmost global variable and the (current) bottom of the stack. The heap is managed by software at runtime. In theory, you can allocate as much heapspace as there is between top of global vars and bottom of stack. However, the stack won't care if it then grows into already allocated heapspace, causing havoc to your stored data (and storing data on the allocated heapspace will corrupt the stack too).
+
+
+OLD-----
+
+
+The MSP430 family's memory space is configured in a "von-Neumann Architecture" and
+has code memory (ROM, EPROM, RAM) and data memory (RAM, EEPROM, ROM) in
+one address space using a unique address and data bus.
+
+All the physically separated memory areas, the internal areas for ROM, RAM, SFRs and
+peripheral modules, and the external memory, are mapped into the common address
+space
+
+The configuration according to the small memory model and data bus width is shown
+below:
+Address 				Function    |	Access
+----------------------------------------------------|------------
+0FFFFh						    |
+:	Interrupt vector table 		ROM 	    |	Word/Byte
+0FFE0h						    |
+----------------------------------------------------|------------
+0FFDFh 	Program Memory				    |
+:	Branch control tables		ROM	    |	Word/Byte
+:	Data tables......			    |
+----------------------------------------------------|------------
+:						    |
+:						    |
+----------------------------------------------------|------------
+0200h 	Data Memory			RAM	    |	Word/Byte
+----------------------------------------------------|------------
+01FFh					Timer,	    |
+:	16-bit Peripheral Modules	ADC, ...... |	Word
+0100h						    |
+----------------------------------------------------|------------
+0FFh					I/O, 	    |
+:	8-bit Peripheral Modules	LCD,	    |	Byte
+010h					8bT/C, .... |
+----------------------------------------------------|------------
+0Fh						    |
+:	Special Function Registers	SFR	    |	Byte
+0h						    |
+----------------------------------------------------|------------
+
+
+
+
+The Data Bus is 16-bit or 8-bit wide. For those modules that can be accessed with word
+data, the width is always 16 bits, and for the other modules 8 bits; they should only be
+accessed with byte instructions. The Program Memory (ROM) and the Data Memory
+(RAM) can be accessed with byte or word instructions. Parts of peripheral modules are
+realized as 16-bit wide or 8-bit wide modules. The access should use the proper
+instructions, either byte or word.
+
+Various sizes of ROM up to 64K bytes are possible. The common address space is
+shared with special function registers, peripheral module registers, data and code
+memory. The special function registers and peripheral modules are mapped into the
+address range, starting with 0 and up to 01FFh. The remaining address space 0200h to
+0FFFFh is shared by data and code memory.
+
+4.3 RAM and Peripheral Organization
+The entire RAM can be accessed in byte or word data, using the appropriate instruction
+suffix. The peripheral modules are located in two different address spaces:
+• the special function registers are byte oriented by hardware and mapped into the
+address space from 0h up to 0Fh
+• the peripheral modules that are byte oriented by hardware are mapped into the
+address space from 010h up to 0FFh
+• and peripheral modules that are word oriented by hardware are mapped into the
+address space from 100h up to 01FFh
+
+4.3.1 RAM
+The RAM can be used for both code and data memory. Code accesses are always
+made on even byte addresses.
+
+A Word consists of two bytes, a Highbyte (bit 15 to bit 8) and a Lowbyte (bit 7 to bit 0)
+and should always be aligned to even addresses.
+
+All operations on Stack and PC are word operations, and use even aligned memory
+addresses.
+
+
+Word modules
+
+Word modules are peripherals that are connected to the complete 16-bit MDB.
+Access to word modules is always in word format, and byte access is not supported
+since the hardware is constructed for word operation only.
+
+The peripheral file address space is organized in sixteen frames, and each frame
+represents eight words.
+
+1F0h - 1FFh reserved
+1E0h - 1EFh reserved
+1D0h - 1DFh reserved
+1C0h - 1CFh reserved
+1B0h - 1BFh reserved
+1A0h - 1aFh reserved
+190h - 19Fh reserved
+180h - 18Fh reserved
+170h - 17Fh Timer_A
+160h - 16Fh Timer_A
+150h - 15Fh reserved
+140h - 14Fh reserved
+130h - 13Fh Multiplier
+120h - 12Fh Watchdog Timer
+110h - 11Fh Analog-to-Digital Converter
+100h - 10Fh reserved
+
+Byte modules
+
+Byte modules are peripherals that are connected to the reduced (eight LSB) MDB. The
+access to byte modules is always a byte access. The hardware in the peripheral byte
+modules takes the LowByte - the least significant bits - along with a write operation.
+
+Byte instructions operate on byte modules without any restriction. Read access to the
+data of a peripheral byte module with word instructions results in unpredictable data on
+the Highbyte. Word data are written into a byte module by writing the LowByte to the
+appropriate peripheral register, and ignoring the HighByte.
+
+The peripheral file address space is organized in sixteen frames
+
+00F0h - 00FFh reserved
+00E0h - 00EFh reserved
+00D0h - 00DFh reserved
+00C0h - 00CFh reserved
+00B0h - 00BFh reserved
+00A0h - 00AFh reserved
+0090h - 009Fh reserved
+0080h - 008Fh reserved
+0070h - 007Fh USART registers
+0060h - 006Fh reserved
+0050h - 005Fh System Clock Generator registers
+0040h - 004Fh Basic Timer, 8-bit Timer/Counter, Timer/Port registers
+0030h - 003Fh LCD registers
+0020h - 002Fh Digital I/O Port P3 and P4 control registers
+0010h - 001Fh Digital I/O Port P0, P1 and P2 control registers
+0000h - 000Fh Special Function Registers
+
+
+4.3.3 Peripheral Modules - Special Function Registers SFRs
+The system configuration and the individual reaction of the peripheral modules to
+processor operation modes are mainly defined in Special Function Registers. The
+Special Function Registers are located in the lower address range, and are realized in
+byte manner. SFRs should be only accessed with byte instructions. Even if specific SFR
+bits share the same address space, they can be implemented physically within the
+associated module.
+
+000Fh Not defined / implemented yet
+000Eh :
+000Dh :
+000Ch :
+000Bh :
+000Ah :
+0009h :
+0008h :
+0007h :
+0006h :
+0005h Module enable 2; ME2.2
+0004h Module enable 1; ME1.1
+0003h Interrupt flag reg. 2; IFG2.x
+0002h Interrupt flag reg. 1; IFG1.x
+0001h Interrupt enable 2; IE2.x
+0000h Interrupt enable 1; IE1.x
+
+ENDOLD----
+
+
+The MSP430 von-Neumann architecture has one address space shared with special function registers
+(SFRs), peripherals, RAM, and Flash/ROM memory as shown in Figure 1-2. See the device-specific data
+sheets for specific memory maps. Code access are always performed on even addresses. Data can be
+accessed as bytes or words.
+
+Address 				Function	Access
+--------------------------------------------------
+1FFFFh						   
+:	Flash				ROM		Word/Byte
+10000h	
+--------------------------------------------------
+0FFFFh	
+:	Interrupt Vector Table		ROM		Word/Byte
+0FFE0h	
+--------------------------------------------------
+0FFDFh:	Flash				ROM		Word/Byte:
+--------------------------------------------------
+|
+|
+--------------------------------------------------
+:
+:	Data Memory 			RAM		Word/Byte
+0200h 
+--------------------------------------------------
+01FFh					Timer,	
+:	16-bit Peripheral Modules	ADC, ...... 	Word
+0100h
+--------------------------------------------------
+0FFh					I/O, 
+:	8-bit Peripheral Modules	LCD,	    	Byte
+010h					8bT/C, ....
+--------------------------------------------------
+0Fh
+:	Special Function Registers	SFR 		Byte
+0h						 
+--------------------------------------------------
+
+1.4.1 Flash/ROM
+
+The start address of Flash/ROM depends on the amount of Flash/ROM present and varies by device. The
+end address for Flash/ROM is 0x0FFFF for devices with less that 60KB of Flash/ROM. Flash can be used
+for both code and data. Word or byte tables can be stored and used in Flash/ROM without the need to
+copy the tables to RAM before using them.
+
+The interrupt vector table is mapped into the upper 16 words of Flash/ROM address space, with the
+highest priority interrupt vector at the highest Flash/ROM word address (0x0FFFE).
+1.4.2 RAM
+
+RAM starts at 0200h. The end address of RAM depends on the amount of RAM present and varies by
+device. RAM can be used for both code and data.
+1.4.3 Peripheral Modules
+
+Peripheral modules are mapped into the address space. The address space from 0100 to 01FFh is
+reserved for 16-bit peripheral modules. These modules should be accessed with word instructions. If byte
+instructions are used, only even addresses are permissible, and the high byte of the result is always 0.
+
+The address space from 010h to 0FFh is reserved for 8-bit peripheral modules. These modules should be
+accessed with byte instructions. Read access of byte modules using word instructions results in
+unpredictable data in the high byte. If word data is written to a byte module only the low byte is written into
+the peripheral register, ignoring the high byte.
+
+1.4.4 Special Function Registers (SFRs)
+Some peripheral functions are configured in the SFRs. The SFRs are located in the lower 16 bytes of the
+address space, and are organized by byte. SFRs must be accessed using byte instructions only. See the
+device-specific data sheets for applicable SFR bits.
+1.4.5 Memory Organization
+
+Bytes are located at even or odd addresses. Words are only located at even addresses as shown in
+Figure 1-3. When using word instructions, only even addresses may be used. The low byte of a word is
+always an even address. The high byte is at the next odd address. For example, if a data word is located
+at address xxx4h, then the low byte of that data word is located at address xxx4h, and the high byte of
+that word is located at address xxx5h.
+Interrupt Source 	Interrupt Flag 	System Interrupt 	Word Address 	Priority
+Power-up,		PORIFG
+external reset		RSTIFG		Reset			0FFFEh 		31, Highest
+watchdog,		WDTIFG 
+flash password,		KEYV
+illegal inst. fetch
+
+NMI,			NMIIFG 		(non)-maskable
+oscillator fault,	OFIFG 		(non)-maskable		0FFFCh 		30
+fls.mem access viol.  	ACCVIFG 	(non)-maskable
+
+device-specific 						0FFFAh 		29
+device-specific 						0FFF8h 		28
+device-specific 						0FFF6h 		27
+Watchdog timer 		WDTIFG 		maskable 		0FFF4h 		26
+device-specific 						0FFF2h 		25
+device-specific 						0FFF0h 		24
+device-specific 						0FFEEh 		23
+device-specific 						0FFECh 		22
+device-specific 						0FFEAh 		21
+device-specific 						0FFE8h 		20
+device-specific 						0FFE6h 		19
+device-specific 						0FFE4h 		18
+device-specific 						0FFE2h 		17
+device-specific 						0FFE0h 		16
+device-specific 						0FFDEh 		15
+device-specific 						0FFDCh 		14
+device-specific 						0FFDAh 		13
+device-specific 						0FFD8h 		12
+device-specific 						0FFD6h 		11
+device-specific 						0FFD4h 		10
+device-specific 						0FFD2h		9
+device-specific 						0FFD0h 		8
+device-specific 						0FFCEh 		7
+device-specific 						0FFCCh 		6
+device-specific 						0FFCAh 		5
+device-specific 						0FFC8h 		4
+device-specific 						0FFC6h 		3
+device-specific 						0FFC4h 		2
+device-specific 						0FFC2h 		1
+device-specific 						0FFC0h 		0, lowest
+
+
+
+
+7.2 Flash Memory Segmentation
+MSP430 flash memory is partitioned into segments. Single bits, bytes, or words can be written to flash
+memory, but the segment is the smallest size of flash memory that can be erased.
+The flash memory is partitioned into main and information memory sections. There is no difference in the
+operation of the main and information memory sections. Code or data can be located in either section.
+The differences between the two sections are the segment size and the physical addresses.
+The information memory has four 64-byte segments. The main memory has one or more 512-byte
+segments. See the device-specific data sheet for the complete memory map of a device.
+The segments are further divided into blocks.
+
+
+
+7.2.1 SegmentA
+SegmentA of the information memory is locked separately from all other segments with the LOCKA bit.
+When LOCKA = 1, SegmentA cannot be written or erased and all information memory is protected from
+erasure during a mass erase or production programming. When LOCKA = 0, SegmentA can be erased
+and written as any other flash memory segment, and all information memory is erased during a mass
+erase or production programming.
+
+
+7.3 Flash Memory Operation
+The default mode of the flash memory is read mode. In read mode, the flash memory is not being erased
+or written, the flash timing generator and voltage generator are off, and the memory operates identically to
+ROM.
+MSP430 flash memory is in-system programmable (ISP) without the need for additional external voltage.
+The CPU can program its own flash memory. The flash memory write and erase modes are selected with
+the BLKWRT, WRT, MERAS, and ERASE bits and are:
+• Byte or word write
+• Block write
+• Segment erase
+• Mass erase (all main memory segments)
+• All erase (all segments)
+Reading from or writing to flash memory while it is being programmed or erased is prohibited. If CPU
+execution is required during the write or erase, the code to be executed must be in RAM. Any flash update
+can be initiated from within flash memory or RAM.
+
+7.3.1 Flash Memory Timing Generator
+Write and erase operations are controlled by the flash timing generator shown in Figure 7-3. The flash
+timing generator operating frequency, fFTG, must be in the range from approximately 257 kHz to
+approximately 476 kHz (see device-specific data sheet).
+7.3.2.1 Initiating an Erase from Within Flash Memory
+Any erase cycle can be initiated from within flash memory or from RAM. When a flash segment erase
+operation is initiated from within flash memory, all timing is controlled by the flash controller, and the CPU
+is held while the erase cycle completes. After the erase cycle completes, the CPU resumes code
+execution with the instruction following the dummy write.
+When initiating an erase cycle from within flash memory, it is possible to erase the code needed for
+execution after the erase. If this occurs, CPU execution is unpredictable after the erase cycle.
+
+7.3.2.2 Initiating an Erase from RAM
+Any erase cycle may be initiated from RAM. In this case, the CPU is not held and can continue to execute
+code from RAM. The BUSY bit must be polled to determine the end of the erase cycle before the CPU
+can access any flash address again. If a flash access occurs while BUSY = 1, it is an access violation,
+ACCVIFG is set, and the erase results are unpredictable.
+7.3.3 Writing Flash Memory
+
+Both write modes use a sequence of individual write instructions, but using the block write mode is
+approximately twice as fast as byte or word mode, because the voltage generator remains on for the
+complete block write. Any instruction that modifies a destination can be used to modify a flash location in
+either byte or word write mode or block write mode. A flash word (low and high bytes) must not be written
+more than twice between erasures. Otherwise, damage can occur.
+
+The BUSY bit is set while a write operation is active and cleared when the operation completes. If the
+write operation is initiated from RAM, the CPU must not access flash while BUSY = 1. Otherwise, an
+access violation occurs, ACCVIFG is set, and the flash write is unpredictable.
+
+
+7.3.3.1 Byte or Word Write
+A byte or word write operation can be initiated from within flash memory or from RAM. When initiating
+from within flash memory, all timing is controlled by the flash controller, and the CPU is held while the
+write completes. After the write completes, the CPU resumes code execution with the instruction following
+the write. The byte or word write timing is shown in Figure 7-7.
+
+When a byte or word write is executed from RAM, the CPU continues to execute code from RAM. The
+BUSY bit must be zero before the CPU accesses flash again, otherwise an access violation occurs,
+ACCVIFG is set, and the write result is unpredictable.
+
+In byte or word mode, the internally-generated programming voltage is applied to the complete 64-byte
+block, each time a byte or word is written, for 27 of the 30 fFTG cycles. With each byte or word write, the
+amount of time the block is subjected to the programming voltage accumulates. The cumulative
+programming time, tCPT, must not be exceeded for any block. If the cumulative programming time is met,
+the block must be erased before performing any further writes to any address within the block. See the
+device-specific data sheet for specifications.
+
+7.3.3.4 Block Write
+The block write can be used to accelerate the flash write process when many sequential bytes or words
+need to be programmed. The flash programming voltage remains on for the duration of writing the 64-byte
+block. The cumulative programming time tCPT must not be exceeded for any block during a block write.
+
+A block write cannot be initiated from within flash memory. The block write must be initiated from RAM
+only. The BUSY bit remains set throughout the duration of the block write. The WAIT bit must be checked
+between writing each byte or word in the block. When WAIT is set the next byte or word of the block can
+be written. When writing successive blocks, the BLKWRT bit must be cleared after the current block is
+complete. BLKWRT can be set initiating the next block write after the required flash recovery time given by
+tend. BUSY is cleared following each block write completion indicating the next block can be written.
+Figure 7-10 shows the block write timing
+
+7.3.4 Flash Memory Access During Write or Erase
+When any write or any erase operation is initiated from RAM and while BUSY = 1, the CPU may not read
+or write to or from any flash location. Otherwise, an access violation occurs, ACCVIFG is set, and the
+result is unpredictable. Also if a write to flash is attempted with WRT = 0, the ACCVIFG interrupt flag is
+set, and the flash memory is unaffected.
+
+When a byte or word write or any erase operation is initiated from within flash memory, the flash controller
+returns op-code 03FFFh to the CPU at the next instruction fetch. Op-code 03FFFh is the JMP PC
+instruction. This causes the CPU to loop until the flash operation is finished. When the operation is
+finished and BUSY = 0, the flash controller allows the CPU to fetch the proper op-code and program
+execution resumes.
+The flash access conditions while BUSY = 1 are listed in Table 7-3.
+
+Interrupts are automatically disabled during any flash operation when EEI = 0 and EEIEX = 0 and on
+MSP430x20xx and MSP430G2xx devices where EEI and EEIEX are not present. After the flash operation
+has completed, interrupts are automatically re-enabled. Any interrupt that occurred during the operation
+has its associated flag set and generates an interrupt request when re-enabled.
+
+When EEIEX = 1 and GIE = 1, an interrupt immediately aborts any flash operation and the FAIL flag is
+set. When EEI = 1, GIE = 1, and EEIEX = 0, a segment erase is interrupted by a pending interrupt every
+32 fFTG cycles. After servicing the interrupt, the segment erase is continued for at least 32 fFTG cycles or
+until it is complete. During the servicing of the interrupt, the BUSY bit remains set but the flash memory
+can be accessed by the CPU without causing an access violation occurs. Nested interrupts and using the
+RETI instruction inside interrupt service routines are not supported.
+
+
+
+Muistialueen osoitekartta:
+
+Osoite					Funktio	    |	Väylän leveys
+----------------------------------------------------|-----------------
+0xFFFF	Reset vector				    |
+:	Interrupt vector table 		 	    |	
+0xFFE0	\					    |	
+0xFFDF	 Flash Segment 1		ROM	    |	Word/Byte
+:	/    Divided into 8 * 64 Byte Blocks	    |	
+0xFE00	[64B][64B][64B][64B][64B][64B][64B][64B]    |
+----------------------------------------------------|-----------------
+0xFDFF						    |
+:	Flash Segments [2 - 31]			    |
+:	Branch control tables,		ROM	    |	Word/Byte
+:	Data tables, ...			    |
+0xC200						    |
+----------------------------------------------------|-----------------
+0xC1FF	Flash Segment 32			    |
+:	Program Memory			ROM	    |	Word/Byte
+0xC000						    |
+----------------------------------------------------|-----------------
+:						    |
+:						    |
+----------------------------------------------------|-----------------
+10FF	Information Memory Seg A		    |
+:	Calibration Variables		ROM	    |	Word/Byte
+10C0						    |
+----------------------------------------------------|-----------------
+10BF						    |
+:	Information Memory Seg B	ROM	    |	Word/Byte
+1080						    |
+----------------------------------------------------|-----------------
+107F						    |
+:	Information Memory Seg C	ROM	    |	Word/Byte
+1040						    |
+----------------------------------------------------|-----------------
+103F						    |
+:	Information Memory Seg D	ROM	    |	Word/Byte
+1000						    |
+----------------------------------------------------|-----------------
+:						    |
+:						    |
+----------------------------------------------------|-----------------
+0x03FF					    	    |
+:	CSTACK 80 Bytes			RAM	    |	Word/Byte
+0x03B0						    |
+----------------------------------------------------|-----------------
+0x03AF						    |
+:	HEAP 80 Bytes			RAM	    |	Word/Byte
+0x0360 						    |	
+----------------------------------------------------|-----------------
+0x035F						    |
+: 	GLOBAL/STATIC 352 Bytes		RAM	    |	Word/Byte
+0x0200 					 	    |	
+----------------------------------------------------|-----------------
+0x01FF					Timer,	    |
+:	16-bit Peripheral Modules	ADC, ...... |	Word
+0x0100						    |
+----------------------------------------------------|-----------------
+0x0FF					I/O, 	    |
+:	8-bit Peripheral Modules	LCD,	    |	Byte
+0x010					8bT/C, .... |
+----------------------------------------------------|-----------------
+0x0F						    |
+:	Special Function Registers	SFR	    |	Byte
+0x0						    |
+----------------------------------------------------|-----------------
+
+
+
+
+
+

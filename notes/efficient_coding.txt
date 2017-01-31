@@ -1,0 +1,26 @@
+#pragma vector=TIMERA1_VECTOR
+__interrupt void Timer_A1_ISR(void)
+{
+switch (__even_in_range(TAIV, 10))
+{
+case 2: P1POUT ˆ= 0x04;
+break;
+case 4: P1POUT ˆ= 0x02;
+break;
+case 10: P1POUT ˆ= 0x01;
+break;
+}
+}
+The intrinsic function __even_in_range requires two parameters, the interrupt vector
+register and the last value in the allowed range, which in this example is 10. The effect
+of the intrinsic function is that the generated code can only handle even values within
+the given range, which is exactly what is required in this case as the interrupt vector
+register for Timer A can only be 0, 2, 4, 6, 8, or 10. If the __even_in_range intrinsic
+
+Avoid using large non-scalar types, such as structures, as parameters or return type. To save stack space, you should instead pass them as pointers or, in C++, as references.
+
+
+The __noreturn keyword can be used on a function to inform the compiler that the
+function will not return. If you use this keyword on such functions, the compiler can
+optimize more efficiently. Examples of functions that do not return are abort and exit.
+Example __noreturn void terminate(void);
